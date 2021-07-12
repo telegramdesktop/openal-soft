@@ -652,6 +652,8 @@ struct WasapiPlayback final : public BackendBase, WasapiProxy {
     ComPtr<IAudioRenderClient> mRender{nullptr};
     HANDLE mNotifyEvent{nullptr};
 
+    ComPtr<IAudioClock> mClock{nullptr};
+
     UINT32 mFrameStep{0u};
     std::atomic<UINT32> mPadding{0u};
 
@@ -1144,6 +1146,12 @@ HRESULT WasapiPlayback::startProxy()
         return hr;
     }
 
+    void *clock;
+    hr = mClient->GetService(IID_IAudioClock, &clock);
+    if(SUCCEEDED(hr)) {
+        mClock = ComPtr<IAudioClock>{static_cast<IAudioClock*>(clock)};
+    }
+
     void *ptr;
     hr = mClient->GetService(IID_IAudioRenderClient, &ptr);
     if(SUCCEEDED(hr))
@@ -1179,6 +1187,7 @@ void WasapiPlayback::stopProxy()
     mThread.join();
 
     mRender = nullptr;
+    mClock = nullptr;
     mClient->Stop();
 }
 
@@ -1186,6 +1195,15 @@ void WasapiPlayback::stopProxy()
 ClockLatency WasapiPlayback::getClockLatency()
 {
     ClockLatency ret;
+
+    if (mClock) {
+        UINT64 pos = 0;
+        UINT64 freq = 1;
+        mClock->GetPosition(&pos, nullptr);
+        mClock->GetFrequency(&freq);
+        ret.ExactDeviceTime = std::chrono::nanoseconds{
+            std::int64_t(std::round(double(pos) / freq * 1'000'000'000.))};
+    }
 
     std::lock_guard<std::mutex> _{mMutex};
     ret.ClockTime = GetDeviceClockTime(mDevice);
