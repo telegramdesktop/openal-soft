@@ -1230,8 +1230,12 @@ struct WasapiCapture final : public BackendBase, WasapiProxy {
     void stop() override;
     void stopProxy() override;
 
+    ClockLatency getClockLatency() override;
+
     void captureSamples(al::byte *buffer, uint samples) override;
     uint availableSamples() override;
+
+    void updateLatency(DWORD flags, UINT64 counter);
 
     HRESULT mOpenStatus{E_FAIL};
     ComPtr<IMMDevice> mMMDev{nullptr};
@@ -1245,6 +1249,10 @@ struct WasapiCapture final : public BackendBase, WasapiProxy {
 
     std::atomic<bool> mKillNow{true};
     std::thread mThread;
+
+    std::atomic<int> mLatency100ns{0};
+    std::size_t mReadsCount{0};
+    double mQueryPerformanceMultiplier = 0.;
 
     DEF_NEWDEL(WasapiCapture)
 };
@@ -1260,6 +1268,34 @@ WasapiCapture::~WasapiCapture()
     mNotifyEvent = nullptr;
 }
 
+void WasapiCapture::updateLatency(DWORD flags, UINT64 counter) {
+    const auto counterDelta = [&] {
+        if ((flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY)
+            || (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR)
+            || !(mReadsCount++ % 100)) {
+            return 0.;
+        }
+        LARGE_INTEGER counterValue;
+        QueryPerformanceCounter(&counterValue);
+        const auto wasCounter = double(counter);
+        const auto nowCounter = (mQueryPerformanceMultiplier > 0.)
+            ? (mQueryPerformanceMultiplier * counterValue.QuadPart)
+            : 0.;
+        const auto result = (nowCounter - wasCounter);
+        constexpr auto kBadDelayMs = 200;
+        if (result < 0. || result > 10'000. * kBadDelayMs) {
+            WARN("Bad WASAPI latency %lf", result);
+            return 0.;
+        }
+        return result;
+    }();
+    const auto queued = mRing->readSpace();
+
+    const auto deviceFrequencyMultiplier = 10'000'000. / mDevice->Frequency;
+    const auto fullDelay = counterDelta
+        + (queued * deviceFrequencyMultiplier);
+    mLatency100ns = int(std::round(fullDelay));
+}
 
 FORCE_ALIGN int WasapiCapture::recordProc()
 {
@@ -1285,12 +1321,16 @@ FORCE_ALIGN int WasapiCapture::recordProc()
             UINT32 numsamples;
             DWORD flags;
             BYTE *rdata;
+            UINT64 position = 0;
+            UINT64 counter = 0;
 
-            hr = mCapture->GetBuffer(&rdata, &numsamples, &flags, nullptr, nullptr);
+            hr = mCapture->GetBuffer(&rdata, &numsamples, &flags, &position, &counter);
             if(FAILED(hr))
                 ERR("Failed to get capture buffer: 0x%08lx\n", hr);
             else
             {
+                updateLatency(flags, counter);
+
                 if(mChannelConv.is_active())
                 {
                     samples.resize(numsamples*2);
@@ -1362,6 +1402,13 @@ void WasapiCapture::open(const char *name)
     {
         ERR("Failed to create notify event: %lu\n", GetLastError());
         hr = E_FAIL;
+    }
+
+    // Query performance frequency.
+    LARGE_INTEGER counterFrequency{};
+    QueryPerformanceFrequency(&counterFrequency);
+    if (counterFrequency.QuadPart) {
+        mQueryPerformanceMultiplier = 10'000'000. / counterFrequency.QuadPart;
     }
 
     if(SUCCEEDED(hr))
@@ -1765,6 +1812,26 @@ void WasapiCapture::captureSamples(al::byte *buffer, uint samples)
 
 uint WasapiCapture::availableSamples()
 { return static_cast<uint>(mRing->readSpace()); }
+
+ClockLatency WasapiCapture::getClockLatency()
+{
+    ClockLatency ret;
+
+    uint refcount;
+    do {
+        refcount = mDevice->waitForMix();
+        ret.ClockTime = GetDeviceClockTime(mDevice);
+        std::atomic_thread_fence(std::memory_order_acquire);
+    } while(refcount != ReadRef(mDevice->MixCount));
+
+    /* NOTE: The device will generally have about all but one periods filled at
+     * any given time during playback. Without a more accurate measurement from
+     * the output, this is an okay approximation.
+     */
+    ret.Latency = std::chrono::nanoseconds{ 100LL * mLatency100ns.load() };
+
+    return ret;
+}
 
 } // namespace
 
