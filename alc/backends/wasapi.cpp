@@ -756,7 +756,7 @@ void WasapiPlayback::open(const char *name)
     {
         if(name)
         {
-            if(PlaybackDevices.empty())
+            //if(PlaybackDevices.empty())
                 pushMessage(MsgType::EnumeratePlayback);
             if(std::strncmp(name, DevNameHead, DevNameHeadLen) == 0)
             {
@@ -1415,7 +1415,7 @@ void WasapiCapture::open(const char *name)
     {
         if(name)
         {
-            if(CaptureDevices.empty())
+            //if(CaptureDevices.empty())
                 pushMessage(MsgType::EnumerateCapture);
             if(std::strncmp(name, DevNameHead, DevNameHeadLen) == 0)
             {
