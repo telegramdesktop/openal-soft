@@ -1310,6 +1310,7 @@ try {
     else
     {
         TRACE("Loading %s...\n", fname.c_str());
+#ifndef __APPLE__
         auto fstr = std::make_unique<std::ifstream>(std::filesystem::u8path(fname),
             std::ios::binary);
         if(!fstr->is_open())
@@ -1318,6 +1319,9 @@ try {
             return nullptr;
         }
         stream = std::move(fstr);
+#endif
+        ERR("Unsupported.\n");
+        return nullptr;
     }
 
     std::unique_ptr<HrtfStore> hrtf;

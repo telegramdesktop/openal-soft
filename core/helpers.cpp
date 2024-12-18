@@ -33,6 +33,7 @@ using namespace std::string_view_literals;
 
 std::mutex gSearchLock;
 
+#ifndef __APPLE__
 void DirectorySearch(const std::filesystem::path &path, const std::string_view ext,
     std::vector<std::string> *const results)
 {
@@ -69,6 +70,7 @@ void DirectorySearch(const std::filesystem::path &path, const std::string_view e
     for(const auto &name : newlist)
         TRACE(" got %s\n", name.c_str());
 }
+#endif
 
 } // namespace
 
@@ -263,6 +265,7 @@ const PathNamePair &GetProcBinary()
                 pathname = procpath.data();
         }
 #endif
+#ifndef __APPLE__
 #ifndef __SWITCH__
         if(pathname.empty())
         {
@@ -291,6 +294,7 @@ const PathNamePair &GetProcBinary()
             }
         }
 #endif
+#endif
 
         PathNamePair res{};
         if(auto seppos = pathname.rfind('/'); seppos < pathname.size())
@@ -314,10 +318,12 @@ auto SearchDataFiles(const std::string_view ext) -> std::vector<std::string>
 
     /* Search the app-local directory. */
     auto results = std::vector<std::string>{};
+#ifndef __APPLE__
     if(auto localpath = al::getenv("ALSOFT_LOCAL_PATH"))
         DirectorySearch(*localpath, ext, &results);
     else if(auto curpath = std::filesystem::current_path(); !curpath.empty())
         DirectorySearch(curpath, ext, &results);
+#endif
 
     return results;
 }
@@ -328,6 +334,7 @@ auto SearchDataFiles(const std::string_view ext, const std::string_view subdir)
     std::lock_guard<std::mutex> srchlock{gSearchLock};
 
     std::vector<std::string> results;
+#ifndef __APPLE__
     auto path = std::filesystem::u8path(subdir);
     if(path.is_absolute())
     {
@@ -362,6 +369,7 @@ auto SearchDataFiles(const std::string_view ext, const std::string_view subdir)
     /* Search the installation data directory */
     if(auto instpath = std::filesystem::path{ALSOFT_INSTALL_DATADIR}; !instpath.empty())
         DirectorySearch(instpath/path, ext, &results);
+#endif
 #endif
 
     return results;

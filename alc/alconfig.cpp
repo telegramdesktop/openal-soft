@@ -383,6 +383,7 @@ void ReadALConfig()
 
 void ReadALConfig()
 {
+#ifndef __APPLE__
     namespace fs = std::filesystem;
     fs::path path{"/etc/openal/alsoft.conf"};
 
@@ -480,6 +481,7 @@ void ReadALConfig()
         if(std::ifstream f{path}; f.is_open())
             LoadConfigFromFile(f);
     }
+#endif
 
     if(auto confname = al::getenv("ALSOFT_CONF"))
     {

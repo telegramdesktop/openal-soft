@@ -81,7 +81,8 @@ AmbDecConf::~AmbDecConf() = default;
 
 std::optional<std::string> AmbDecConf::load(const char *fname) noexcept
 {
-    std::ifstream f{std::filesystem::u8path(fname)};
+#ifndef __APPLE__
+   std::ifstream f{std::filesystem::u8path(fname)};
     if(!f.is_open())
         return std::string("Failed to open file \"")+fname+"\"";
 
@@ -306,4 +307,6 @@ std::optional<std::string> AmbDecConf::load(const char *fname) noexcept
         buffer.clear();
     }
     return make_error(linenum, "Unexpected end of file");
+#endif
+    return std::string("Unsupported.");
 }
