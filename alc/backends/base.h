@@ -20,6 +20,7 @@ using uint = unsigned int;
 struct ClockLatency {
     std::chrono::nanoseconds ClockTime;
     std::chrono::nanoseconds Latency;
+    std::chrono::nanoseconds ExactDeviceTime;
 };
 
 struct BackendBase {
@@ -67,6 +68,9 @@ inline ClockLatency GetClockLatency(DeviceBase *device, BackendBase *backend)
 {
     ClockLatency ret{backend->getClockLatency()};
     ret.Latency += device->FixedLatency;
+    if (!ret.ExactDeviceTime.count()) {
+        ret.ExactDeviceTime = ret.ClockTime;
+    }
     return ret;
 }
 

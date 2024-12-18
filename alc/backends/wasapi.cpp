@@ -1177,6 +1177,7 @@ struct WasapiPlayback final : public BackendBase, WasapiProxy {
     struct PlainDevice {
         ComPtr<IAudioClient> mClient{nullptr};
         ComPtr<IAudioRenderClient> mRender{nullptr};
+        ComPtr<IAudioClock> mClock{nullptr};
     };
     struct SpatialDevice {
         ComPtr<ISpatialAudioClient> mClient{nullptr};
@@ -2057,6 +2058,13 @@ HRESULT WasapiPlayback::resetProxy()
         return hr;
     }
 
+    hr = audio.mClient->GetService(__uuidof(IAudioClock), al::out_ptr(audio.mClock));
+    if(FAILED(hr))
+    {
+        ERR("Failed to get IAudioClock: 0x%08lx\n", hr);
+        return hr;
+    }
+
     hr = audio.mClient->GetService(__uuidof(IAudioRenderClient), al::out_ptr(audio.mRender));
     if(FAILED(hr))
     {
@@ -2126,6 +2134,7 @@ HRESULT WasapiPlayback::startProxy()
         }
         catch(...) {
             ERR("Failed to start thread\n");
+            audio.mClock = nullptr;
             audio.mClient->Stop();
             hr = E_FAIL;
         }
@@ -2173,7 +2182,7 @@ void WasapiPlayback::stopProxy()
     mThread.join();
 
     auto stop_plain = [](PlainDevice &audio) -> void
-    { audio.mClient->Stop(); };
+    { audio.mClock = nullptr; audio.mClient->Stop(); };
     auto stop_spatial = [](SpatialDevice &audio) -> void
     {
         audio.mRender->Stop();
@@ -2187,6 +2196,19 @@ ClockLatency WasapiPlayback::getClockLatency()
 {
     std::lock_guard<std::mutex> dlock{mMutex};
     ClockLatency ret{};
+
+    std::visit(overloaded{[&](PlainDevice &audio) {
+        if (audio.mClock) {
+            UINT64 pos = 0;
+            UINT64 freq = 1;
+            audio.mClock->GetPosition(&pos, nullptr);
+            audio.mClock->GetFrequency(&freq);
+            ret.ExactDeviceTime = std::chrono::nanoseconds{
+                std::int64_t(std::round(double(pos) / freq * 1'000'000'000.))
+            };
+        }
+    }, [](SpatialDevice &audio) -> void {}}, mAudio);
+
     ret.ClockTime = mDevice->getClockTime();
     ret.Latency  = seconds{mPadding.load(std::memory_order_relaxed)};
     ret.Latency /= mFormat.Format.nSamplesPerSec;
@@ -2217,8 +2239,12 @@ struct WasapiCapture final : public BackendBase, WasapiProxy {
     void stop() override;
     void stopProxy() override;
 
+    ClockLatency getClockLatency() override;
+
     void captureSamples(std::byte *buffer, uint samples) override;
     uint availableSamples() override;
+
+    void updateLatency(DWORD flags, UINT64 counter);
 
     HRESULT mOpenStatus{E_FAIL};
     DeviceHandle mMMDev{nullptr};
@@ -2232,6 +2258,10 @@ struct WasapiCapture final : public BackendBase, WasapiProxy {
 
     std::atomic<bool> mKillNow{true};
     std::thread mThread;
+ 
+    std::atomic<int> mLatency100ns{0};
+    std::size_t mReadsCount{0};
+    double mQueryPerformanceMultiplier = 0.;
 };
 
 WasapiCapture::~WasapiCapture()
@@ -2245,6 +2275,34 @@ WasapiCapture::~WasapiCapture()
     mNotifyEvent = nullptr;
 }
 
+void WasapiCapture::updateLatency(DWORD flags, UINT64 counter) {
+    const auto counterDelta = [&] {
+        if ((flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY)
+            || (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR)
+            || !(mReadsCount++ % 100)) {
+            return 0.;
+        }
+        LARGE_INTEGER counterValue;
+        QueryPerformanceCounter(&counterValue);
+        const auto wasCounter = double(counter);
+        const auto nowCounter = (mQueryPerformanceMultiplier > 0.)
+            ? (mQueryPerformanceMultiplier * counterValue.QuadPart)
+            : 0.;
+        const auto result = (nowCounter - wasCounter);
+        constexpr auto kBadDelayMs = 200;
+        if (result < 0. || result > 10'000. * kBadDelayMs) {
+            WARN("Bad WASAPI latency %lf", result);
+            return 0.;
+        }
+        return result;
+    }();
+    const auto queued = mRing->readSpace();
+
+    const auto deviceFrequencyMultiplier = 10'000'000. / mDevice->Frequency;
+    const auto fullDelay = counterDelta
+        + (queued * deviceFrequencyMultiplier);
+    mLatency100ns = int(std::round(fullDelay));
+}
 
 FORCE_ALIGN int WasapiCapture::recordProc()
 {
@@ -2270,12 +2328,16 @@ FORCE_ALIGN int WasapiCapture::recordProc()
             UINT32 numsamples;
             DWORD flags;
             BYTE *rdata;
+            UINT64 position = 0;
+            UINT64 counter = 0;
 
-            hr = mCapture->GetBuffer(&rdata, &numsamples, &flags, nullptr, nullptr);
+            hr = mCapture->GetBuffer(&rdata, &numsamples, &flags, &position, &counter);
             if(FAILED(hr))
                 ERR("Failed to get capture buffer: 0x%08lx\n", hr);
             else
             {
+                updateLatency(flags, counter);
+
                 if(mChannelConv.is_active())
                 {
                     samples.resize(numsamples*2_uz);
@@ -2354,6 +2416,13 @@ void WasapiCapture::open(std::string_view name)
         ERR("Failed to create notify events: %lu\n", GetLastError());
         throw al::backend_exception{al::backend_error::DeviceError,
             "Failed to create notify events"};
+    }
+
+    // Query performance frequency.
+    LARGE_INTEGER counterFrequency{};
+    QueryPerformanceFrequency(&counterFrequency);
+    if (counterFrequency.QuadPart) {
+        mQueryPerformanceMultiplier = 10'000'000. / counterFrequency.QuadPart;
     }
 
     mOpenStatus = pushMessage(MsgType::OpenDevice, name).get();
@@ -2769,6 +2838,26 @@ void WasapiCapture::captureSamples(std::byte *buffer, uint samples)
 
 uint WasapiCapture::availableSamples()
 { return static_cast<uint>(mRing->readSpace()); }
+
+ClockLatency WasapiCapture::getClockLatency()
+{
+    ClockLatency ret;
+
+    uint refcount;
+    do {
+        refcount = mDevice->waitForMix();
+        ret.ClockTime = mDevice->getClockTime();
+        std::atomic_thread_fence(std::memory_order_acquire);
+    } while(refcount != mDevice->mMixCount.load(std::memory_order_relaxed));
+
+    /* NOTE: The device will generally have about all but one periods filled at
+     * any given time during playback. Without a more accurate measurement from
+     * the output, this is an okay approximation.
+     */
+    ret.Latency = std::chrono::nanoseconds{ 100LL * mLatency100ns.load() };
+
+    return ret;
+}
 
 } // namespace
 

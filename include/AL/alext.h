@@ -640,6 +640,11 @@ AL_API void AL_APIENTRY alGetBufferPtrvSOFT(ALuint buffer, ALenum param, ALvoid 
 #define ALC_SURROUND_7_1_SOFT                    0x1506
 #endif
 
+#ifndef ALC_SOFT_device_clock_exact
+#define ALC_SOFT_device_clock_exact 1
+#define AL_SAMPLE_OFFSET_CLOCK_EXACT_SOFT        0x1215
+#endif
+
 #ifndef AL_SOFT_source_start_delay
 #define AL_SOFT_source_start_delay
 typedef void (AL_APIENTRY*LPALSOURCEPLAYATTIMESOFT)(ALuint source, ALint64SOFT start_time) AL_API_NOEXCEPT17;

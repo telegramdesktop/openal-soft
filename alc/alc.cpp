@@ -2483,7 +2483,7 @@ ALC_API void ALC_APIENTRY alcGetInteger64vSOFT(ALCdevice *device, ALCenum pname,
         return;
     }
     const auto valuespan = al::span{values, static_cast<uint>(size)};
-    if(!dev || dev->Type == DeviceType::Capture)
+    if(!dev || (dev->Type == DeviceType::Capture && pname != ALC_DEVICE_LATENCY_SOFT))
     {
         auto ivals = std::vector<int>(valuespan.size());
         if(size_t got{GetIntegerv(dev.get(), pname, ivals)})
