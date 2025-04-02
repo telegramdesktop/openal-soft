@@ -1170,11 +1170,11 @@ constexpr ALuint Int64ValsByProp(ALenum prop)
 
     case AL_SAMPLE_OFFSET_LATENCY_SOFT:
     case AL_SAMPLE_OFFSET_CLOCK_SOFT:
-    case AL_SAMPLE_OFFSET_CLOCK_EXACT_SOFT:
     case AL_STEREO_ANGLES:
         return 2;
 
     case AL_AUXILIARY_SEND_FILTER:
+    case AL_SAMPLE_OFFSET_CLOCK_EXACT_SOFT:
         return 3;
 
     case AL_POSITION:
