@@ -539,72 +539,21 @@ struct DeviceHelper final : private IMMNotificationClient
     }
 #else
     /** ----------------------- IMMNotificationClient ------------ */
-    STDMETHODIMP OnDeviceStateChanged(LPCWSTR /*pwstrDeviceId*/, DWORD /*dwNewState*/) noexcept override { return S_OK; }
+    STDMETHODIMP OnDeviceStateChanged(LPCWSTR pwstrDeviceId, DWORD dwNewState) noexcept override
+    {
+        TRACE("OnDeviceStateChanged(%ls, 0x%lx)\n", pwstrDeviceId ? pwstrDeviceId : L"<null>",
+            dwNewState);
+
+        if(!(dwNewState&DEVICE_STATE_ACTIVE))
+            return DeviceRemoved(pwstrDeviceId);
+        return DeviceAdded(pwstrDeviceId);
+    }
 
     STDMETHODIMP OnDeviceAdded(LPCWSTR pwstrDeviceId) noexcept override
-    {
-        ComPtr<IMMDevice> device;
-        HRESULT hr{mEnumerator->GetDevice(pwstrDeviceId, al::out_ptr(device))};
-        if(FAILED(hr))
-        {
-            ERR("Failed to get device: 0x%08lx\n", hr);
-            return S_OK;
-        }
-
-        ComPtr<IMMEndpoint> endpoint;
-        hr = device->QueryInterface(__uuidof(IMMEndpoint), al::out_ptr(endpoint));
-        if(FAILED(hr))
-        {
-            ERR("Failed to get device endpoint: 0x%08lx\n", hr);
-            return S_OK;
-        }
-
-        EDataFlow flowdir{};
-        hr = endpoint->GetDataFlow(&flowdir);
-        if(FAILED(hr))
-        {
-            ERR("Failed to get endpoint data flow: 0x%08lx\n", hr);
-            return S_OK;
-        }
-
-        auto devlock = DeviceListLock{gDeviceList};
-        auto &list = (flowdir==eRender) ? devlock.getPlaybackList() : devlock.getCaptureList();
-
-        if(AddDevice(device, pwstrDeviceId, list))
-        {
-            const auto devtype = (flowdir==eRender) ? alc::DeviceType::Playback
-                : alc::DeviceType::Capture;
-            const std::string msg{"Device added: "+list.back().name};
-            alc::Event(alc::EventType::DeviceAdded, devtype, msg);
-        }
-
-        return S_OK;
-    }
+    { return DeviceAdded(pwstrDeviceId); }
 
     STDMETHODIMP OnDeviceRemoved(LPCWSTR pwstrDeviceId) noexcept override
-    {
-        auto devlock = DeviceListLock{gDeviceList};
-        for(auto flowdir : std::array{eRender, eCapture})
-        {
-            auto &list = (flowdir==eRender) ? devlock.getPlaybackList() : devlock.getCaptureList();
-            auto devtype = (flowdir==eRender)?alc::DeviceType::Playback : alc::DeviceType::Capture;
-
-            /* Find the ID in the list to remove. */
-            auto iter = std::find_if(list.begin(), list.end(),
-                [pwstrDeviceId](const DevMap &entry) noexcept
-                { return pwstrDeviceId == entry.devid; });
-            if(iter == list.end()) continue;
-
-            TRACE("Removing device \"%s\", \"%s\", \"%ls\"\n", iter->name.c_str(),
-                iter->endpoint_guid.c_str(), iter->devid.c_str());
-
-            std::string msg{"Device removed: "+std::move(iter->name)};
-            list.erase(iter);
-
-            alc::Event(alc::EventType::DeviceRemoved, devtype, msg);
-        }
-        return S_OK;
-    }
+    { return DeviceRemoved(pwstrDeviceId); }
 
     /* NOLINTNEXTLINE(clazy-function-args-by-ref) */
     STDMETHODIMP OnPropertyValueChanged(LPCWSTR /*pwstrDeviceId*/, const PROPERTYKEY /*key*/) noexcept override { return S_OK; }
@@ -830,6 +779,72 @@ private:
 
         return devid;
     }
+
+    STDMETHODIMP DeviceAdded(LPCWSTR pwstrDeviceId) noexcept
+    {
+        ComPtr<IMMDevice> device;
+        HRESULT hr{mEnumerator->GetDevice(pwstrDeviceId, al::out_ptr(device))};
+        if(FAILED(hr))
+        {
+            ERR("Failed to get device: 0x%08lx\n", hr);
+            return S_OK;
+        }
+
+        ComPtr<IMMEndpoint> endpoint;
+        hr = device->QueryInterface(__uuidof(IMMEndpoint), al::out_ptr(endpoint));
+        if(FAILED(hr))
+        {
+            ERR("Failed to get device endpoint: 0x%08lx\n", hr);
+            return S_OK;
+        }
+
+        EDataFlow flowdir{};
+        hr = endpoint->GetDataFlow(&flowdir);
+        if(FAILED(hr))
+        {
+            ERR("Failed to get endpoint data flow: 0x%08lx\n", hr);
+            return S_OK;
+        }
+
+        auto devlock = DeviceListLock{gDeviceList};
+        auto &list = (flowdir==eRender) ? devlock.getPlaybackList() : devlock.getCaptureList();
+
+        if(AddDevice(device, pwstrDeviceId, list))
+        {
+            const auto devtype = (flowdir==eRender) ? alc::DeviceType::Playback
+                : alc::DeviceType::Capture;
+            const std::string msg{"Device added: "+list.back().name};
+            alc::Event(alc::EventType::DeviceAdded, devtype, msg);
+        }
+
+        return S_OK;
+    }
+
+    STDMETHODIMP DeviceRemoved(LPCWSTR pwstrDeviceId) noexcept
+    {
+        auto devlock = DeviceListLock{gDeviceList};
+        for(auto flowdir : std::array{eRender, eCapture})
+        {
+            auto &list = (flowdir==eRender) ? devlock.getPlaybackList() : devlock.getCaptureList();
+            auto devtype = (flowdir==eRender)?alc::DeviceType::Playback : alc::DeviceType::Capture;
+
+            /* Find the ID in the list to remove. */
+            auto iter = std::find_if(list.begin(), list.end(),
+                [pwstrDeviceId](const DevMap &entry) noexcept
+                { return pwstrDeviceId == entry.devid; });
+            if(iter == list.end()) continue;
+
+            TRACE("Removing device \"%s\", \"%s\", \"%ls\"\n", iter->name.c_str(),
+                iter->endpoint_guid.c_str(), iter->devid.c_str());
+
+            std::string msg{"Device removed: "+std::move(iter->name)};
+            list.erase(iter);
+
+            alc::Event(alc::EventType::DeviceRemoved, devtype, msg);
+        }
+        return S_OK;
+    }
+
     ComPtr<IMMDeviceEnumerator> mEnumerator{nullptr};
 
 #else
