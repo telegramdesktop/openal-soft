@@ -790,6 +790,16 @@ private:
             return S_OK;
         }
 
+        DWORD state{};
+        hr = device->GetState(&state);
+        if(FAILED(hr))
+        {
+            ERR("Failed to get device state: 0x%08lx\n", hr);
+            return S_OK;
+        }
+        if(!(state&DEVICE_STATE_ACTIVE))
+            return S_OK;
+
         ComPtr<IMMEndpoint> endpoint;
         hr = device->QueryInterface(__uuidof(IMMEndpoint), al::out_ptr(endpoint));
         if(FAILED(hr))
